@@ -1,4 +1,4 @@
-#!/bin/bash -x
+#!/bin/bash 
 trap "exit 5" TERM
 export SCRIPT_PID=$$
 # this script based on 
