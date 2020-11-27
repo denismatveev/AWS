@@ -1,4 +1,4 @@
-#!/bin/bash 
+#!/bin/bash -x
 trap "exit 5" TERM
 export SCRIPT_PID=$$
 # this script based on 
@@ -289,12 +289,13 @@ NewLaunchConfiguration()
     local ami=$1
     # Get number of LaunchConfigurations created on given date
     local n=$(/usr/local/bin/aws autoscaling describe-launch-configurations --query LaunchConfigurations[*].[LaunchConfigurationName] --output text | grep floralfrog-$(date +%Y%m%d ) | wc -l)
-    latestLaunchConfigurationName=$(/usr/local/bin/aws autoscaling describe-launch-configurations --query 'reverse(sort_by(LaunchConfigurations, &CreatedTime))[0].[LaunchConfigurationName]')
+    latestLaunchConfigurationName=$(/usr/local/bin/aws autoscaling describe-launch-configurations --query LaunchConfigurations[*].[LaunchConfigurationName] --output text | grep floralfrog-$(date +%Y%m%d ) | tail -1)
+    #latestLaunchConfigurationName=$(/usr/local/bin/aws autoscaling describe-launch-configurations --query 'reverse(sort_by(LaunchConfigurations, &CreatedTime))[0].[LaunchConfigurationName]')
     NewLaunchConfigurationName=floralfrog-$(date +%Y%m%d)-$n
-#  if [[ "$latestLaunchConfigurationName" == "$NewLaunchConfigurationName" ]]; then
-#       ((n++))
-#    fi
-#    NewLaunchConfigurationName=floralfrog-$(date +%Y%m%d)-$n
+    if [[ "$latestLaunchConfigurationName" == "$NewLaunchConfigurationName" ]]; then
+       ((n++))
+    fi
+    NewLaunchConfigurationName=floralfrog-$(date +%Y%m%d)-$n
     /usr/local/bin/aws autoscaling create-launch-configuration --launch-configuration-name "$NewLaunchConfigurationName" --image-id "$ami" --security-groups "$SECURITYGROUPS" --instance-type "$INSTANCETYPE" --instance-monitoring Enabled=true --associate-public-ip-address --key-name "$KEYNAME" --output text
     if [[ $? -ne 0 ]];then 
        kill -s TERM $SCRIPT_PID
