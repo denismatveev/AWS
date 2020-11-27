@@ -1,12 +1,12 @@
 #!/bin/bash 
-
+trap "exit 5" TERM
+export SCRIPT_PID=$$
 # this script based on 
 # https://docs.aws.amazon.com/imagebuilder/latest/userguide/security-best-practices.html
-
 # Some static variables
 
 SECURITYGROUPS=
-INSTANCETYPE=
+INSTANCETYPE=t2.medium 
 KEYNAME=
 AUTOSCALINGGROUPNAME=
 
@@ -18,11 +18,12 @@ usage()
     echo " Options:"
     echo "  -i <identity>           Optional: ssh identity to connect to EC2 instance(private key) "
     echo "  -h                      Show this message."
-    echo "  -a <ip addr>            Required: Public or local ip address of EC2 instance image to be created from "
+    echo "  -a <ip addr>            Required: Public or local ip address of EC2 instance image to be created from (must be accessable) "
+    echo "  -r                      Optional: Force refresh autoscaling group after AMI creating "
     echo ""
 }
 
-if [  "$#" -eq 0 ];then
+if [ "$#" -eq 0 ];then
     usage
     exit 1
 fi 
@@ -47,7 +48,7 @@ valid_ip()
 }
 
 # getopts
-   while getopts ":hi:a:" opt
+   while getopts ":hi:a:r" opt
     do
      case "$opt" in
       h)
@@ -62,6 +63,10 @@ valid_ip()
        ipaddr="$OPTARG"
        continue
        ;;
+      r)
+      REFRESH_AUTOSCALING_GROUP=1;
+      continue;
+       ;;
       ?)
        usage
        exit 1
@@ -69,17 +74,17 @@ valid_ip()
      esac
     done
 shift $((OPTIND-1))
-if [ -z "${ipaddr:+x}" ]; then
+if [[ -z "${ipaddr:+x}" ]]; then
    usage
    exit 1;
 fi
 
-if [[ "$(valid_ip "$ipaddr")" != 0 ]] ; then 
+if [[ "$(valid_ip "$ipaddr")" -ne 0 ]] ; then 
    echo "Wrong IP address: "$ipaddr""
    usage
    exit 1;
 fi
-if [ -z "${sshkey:+x}" ]; then
+if [[ -z "${sshkey:+x}" ]]; then
    SSHCOMMAND="ssh centos@"$ipaddr" -p2222 /bin/bash" # The option -T will disable pseudo terminal allocation. Is it suitable for replacing '/bin/bash' ?
 else 
    SSHCOMMAND="ssh -i $sshkey centos@"$ipaddr" -p2222 /bin/bash" # a bug is here
@@ -235,7 +240,10 @@ remove_files CUSTOM_FILES[@]
 remove_files FILES[@] # removing the last, because contains sudoers file which necessary to perform sudo accross all the script 
 echo "Erasing files done"
 EOF
-
+if [[ $? -ne 0 ]];then
+    echo "SSH command failed."
+    exit 1
+fi
 ############
 # Functions to interact with AWS
 export AWS_PAGER=""
@@ -245,38 +253,28 @@ export AWS_DEFAULT_REGION=eu-west-2
 
 get_instance_id()
 {
-  echo "Getting instance ID"
-  if [ -z "${1:+x}" ];then
+  if [[ -z "${1:+x}" ]];then
     echo "Function didn't receive ip address of the instance. Exit"
-    exit 2
+    kill -s TERM $SCRIPT_PID 
   fi
   local ip=$1
   local instance_id
-  instance_id=$(/usr/local/bin/aws ec2 describe-instances --filters Name=ip-address,Values="$ip" --query "Reservations[*].Instances[*].InstanceId" --output text)
-  if [ $? != 0 ]; then
-    echo "While getting instance ID AWS API returned an error. Exit."
-    exit 2
-  fi
+  instance_id=$(/usr/local/bin/aws ec2 describe-instances --filters Name=ip-address,Values="$ip" --query "Reservations[*].Instances[*].InstanceId" --output text || kill -s TERM $SCRIPT_PID)
   echo "$instance_id"
 }
 
 create_ami()
 {
   local instance_id=$1
-  if [ -z "${1:+x}" ];then
+  if [[ -z "${1:+x}" ]];then
     echo "Function didn't receive instance_id. Exit."
-    exit 2
+    kill -s TERM $SCRIPT_PID 
   fi
-  echo "Creating AMI from instance ""$instance_id"
 # n is a count of AMI created on this date
   n=$(/usr/local/bin/aws ec2 describe-images --filters Name=name,Values=floralfrog-$(date +%Y%m%d)-* --query 'Images[*].[ImageId]' --output text | wc -l)
   local ami_name=floralfrog-$(date +%Y%m%d)-$n
 
-  local ami_id=$(/usr/local/bin/aws ec2 create-image --name "$ami_name" --instance-id "$instance_id" --output text)
-  if [ $? != 0 ]; then
-    echo "While AMI was being created AWS API returned an error. Exit"
-    exit 2
-  fi
+  local ami_id=$(/usr/local/bin/aws ec2 create-image --name "$ami_name" --instance-id "$instance_id" --output text || kill -s TERM $SCRIPT_PID)
   echo "$ami_id"
 }
 
@@ -285,54 +283,60 @@ create_ami()
 NewLaunchConfiguration()
 {
     if [[ -z ${1:+x} ]]; then
-       echo "No AMI provided for creating LaunchConfiguration"
-       exit 3
+      echo "No AMI provided for creating LaunchConfiguration"
+      kill -s TERM $SCRIPT_PID 
     fi
     local ami=$1
-    echo "Creating new Launch Configuration with new AMI"
     # Get number of LaunchConfigurations created on given date
-    local n=$(/usr/local/bin/aws autoscaling describe-launch-configurations --query 'reverse(sort_by(LaunchConfigurations, &CreatedTime))[0].[LaunchConfigurationName]' | grep floralfrog-$(date +%Y%m%d) | wc -l)
+    local n=$(/usr/local/bin/aws autoscaling describe-launch-configurations --query LaunchConfigurations[*].[LaunchConfigurationName] --output text | grep floralfrog-$(date +%Y%m%d ) | wc -l)
+    latestLaunchConfigurationName=$(/usr/local/bin/aws autoscaling describe-launch-configurations --query 'reverse(sort_by(LaunchConfigurations, &CreatedTime))[0].[LaunchConfigurationName]')
     NewLaunchConfigurationName=floralfrog-$(date +%Y%m%d)-$n
-    # Get the latest LaunchConfiguration
-    NewLaunchConfiguration=$(/usr/local/bin/aws autoscaling create-launch-configuration --launch-configuration-name "$NewLaunchConfigurationName" --image-id "$ami" --security-groups "$SECURITYGROUPS" --instance-type "$INSTANCETYPE" --instance-monitoring Enabled=true --associate-public-ip-address --key-name "$KEYNAME")
-   if [[ $? -ne 0 ]]; then
-      echo "Creating new Launch Configuration failed. Check AWS Cloud for details. Probably Launch Configuration Limit exceeded."
-      exit 3
-   fi
-   echo $NewLaunchConfiguration
+#  if [[ "$latestLaunchConfigurationName" == "$NewLaunchConfigurationName" ]]; then
+#       ((n++))
+#    fi
+#    NewLaunchConfigurationName=floralfrog-$(date +%Y%m%d)-$n
+    /usr/local/bin/aws autoscaling create-launch-configuration --launch-configuration-name "$NewLaunchConfigurationName" --image-id "$ami" --security-groups "$SECURITYGROUPS" --instance-type "$INSTANCETYPE" --instance-monitoring Enabled=true --associate-public-ip-address --key-name "$KEYNAME" --output text
+    if [[ $? -ne 0 ]];then 
+       kill -s TERM $SCRIPT_PID
+    fi
+   echo "$NewLaunchConfigurationName"
 
 }
 Reconfigure_AutoScalingGroup()
 {
-    echo "Reconfiguring AutoScaling Group to use new Launch Configuration"
     if [[ -z ${1:+x} ]];then
-        echo "No LaunchConfigurationName provided for Autoscaling group"
-        exit 3;
+      echo "No LaunchConfigurationName provided for Autoscaling group"
+      kill -s TERM $SCRIPT_PID 
     fi
     LC=$1
-     /usr/local/bin/aws/ autoscaling update-auto-scaling-group --auto-scaling-group-name "$AUTOSCALINGGROUPNAME" --launch-configuration-name  "$LC"
-}
-GetAMIState()
-{
-    if [[ -z ${1:+x} ]]; then
-       echo "No AMI provided for getting state"
-       exit 3
-    fi
-    local ami=$1
-    local ami_state=$(/usr/local/bin/aws ec2 describe-images --image-ids "$ami" --query 'Images[*].[State]')    
-    echo $ami_state
-
+     /usr/local/bin/aws autoscaling update-auto-scaling-group --auto-scaling-group-name "$AUTOSCALINGGROUPNAME" --launch-configuration-name  "$LC" --output text
+   if [[ $? -ne 0 ]]; then
+      kill -s TERM $SCRIPT_PID 
+   fi
 }
 # main
+echo "Getting instance ID matched to the ip address."
 instance=$(get_instance_id "$ipaddr")
+echo "Creating new AMI"
 ami=$(create_ami "$instance")
-# waiting while image is being prepared
-while[ $(GetAMIStatus "$ami") != "available" ]
-do
-    sleep 5;
-done
-
+echo "Creating New Launch Configuration with just created AMI."
 NewLC=$(NewLaunchConfiguration "$ami")
-
+echo "Reconfiguring Autoscaling group: Replacing Launch Configuration contains just prepared AMI."
 Reconfigure_AutoScalingGroup "$NewLC"
-echo "Congratulation! New Launch Configuration in an Autoscaling Group has been created."
+if [[ $? -eq 0 ]]; then
+    echo "Congratulation! New Launch Configuration in an Autoscaling Group has been created."
+else
+    echo "Autoscaling group reconfigured unsuccessfully. Please check AWS cloud for details."
+    exit 4
+fi
+if [[ -z ${REFRESH_AUTOSCALING_GROUP:+x} ]]; then
+   echo "Successfully finished"
+   exit 0;
+fi
+echo "Finally refreshing instances!"
+/usr/local/bin/aws autoscaling update-auto-scaling-group --start-instance-refresh --auto-scaling-group-name "$REFRESH_AUTOSCALING_GROUP"
+if [[ $? -eq 0 ]]; then
+   echo "Refreshing Autoscaling group will start when AMI is availabe."
+else
+   exit 4
+fi
