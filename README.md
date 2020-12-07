@@ -31,3 +31,6 @@ Where
 `KEYNAME` - ssh public key to be placed into VM from the keypair KEYNAME
 
 `AUTOSCALINGGROUPNAME` - auto scaling group the instance should be connected to
+
+
+Then run the script and wait until an instance will be launched. To monitor its status go to AWS console.
