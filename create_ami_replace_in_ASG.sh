@@ -13,6 +13,21 @@ AUTOSCALINGGROUPNAME=
 
 usage()
 {
+    echo ""
+    echo ""
+    echo " ###############################################################################################################################"
+    echo " To use the script put the following necessary variables:"
+    echo " SECURITYGROUPS="
+    echo " INSTANCETYPE="
+    echo " KEYNAME="
+    echo " AUTOSCALINGGROUPNAME="
+    echo " Also the script must contain the credentials to connect to AWS API:"
+    echo " AWS_ACCESS_KEY_ID"
+    echo " AWS_SECRET_ACCESS_KEY"
+    echo " WARNING: DON'T STORE THE CREDENTIALS IN THE SCRIPT"
+    echo " ###############################################################################################################################"
+    echo ""
+    echo ""
     echo "Usage: $(basename $0) [Option]"
     echo ""
     echo " Options:"
@@ -20,6 +35,7 @@ usage()
     echo "  -h                      Show this message."
     echo "  -a <ip addr>            Required: Public or local ip address of EC2 instance image to be created from (must be accessable) "
     echo "  -r                      Optional: Force refresh autoscaling group after AMI creating "
+    echo ""
     echo ""
 }
 
